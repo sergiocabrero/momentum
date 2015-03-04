@@ -1,0 +1,168 @@
+//import control.Control;
+//import rtpplus.RTPPlus;
+//import gateway.Gateway;
+//import overlayManager.OverlayManager;
+//import overlayTransport.OverlayTransport;
+import java.util.Iterator;
+import java.util.SortedMap;
+import java.util.SortedSet;
+import java.util.TreeMap;
+
+import overlayManager.OverlayManager;
+import overlayVideo.RTPPPacket;
+import overlayVideo.RTPPacket;
+import overlayVideo.Stream;
+import utils.Constants;
+import utils.Debugger;
+
+/**
+ * 
+ * The MOMENTUM class is the main class of the system. It can receive the localhost IP as argument.
+ * Use: java MOMENTUM [localhost_ip]  
+ * 
+ * @author sergio
+ *
+ */
+public class TestOfSchedule {
+	private static void addFrames(int n, Stream s)
+	{
+		
+		long pSN=0;
+		long fN=0;
+		long frameFirstPacket;
+		long GOP = 0;
+		int packets, frameType;
+		long previous = s.getNumberOfPacketsStored();
+		if(previous > 0)
+		{
+			RTPPPacket p = s.getPacket(previous-1);
+			pSN = p.getSequenceNumber() + 1;
+			GOP = p.getGOP() + 1;
+			fN = p.getFramesSN()[0] +1; 
+			
+		}
+		
+		for(int i=0;i<n; i++)
+		{
+			
+			if(i%12 == 0 || i == 0)
+			{
+				frameType = Constants.MPEG_FRAME_I;
+				packets = 33;
+				GOP++;
+				frameFirstPacket = pSN; 
+			} else if (i%3 == 0)
+			{
+				frameType = Constants.MPEG_FRAME_P;
+				packets = 5;
+				frameFirstPacket = pSN; 
+
+			} else
+			{
+				frameType = Constants.MPEG_FRAME_B;
+				packets = 1;
+				frameFirstPacket = pSN; 
+			}
+		
+			for (int j = 0; j < packets; j++) {
+					RTPPPacket p = new RTPPPacket("id", pSN, GOP, new long[]{fN}, (long) frameFirstPacket, frameType, new byte[1]);
+					
+					pSN++;
+					s.addPacket(p);
+			}
+			fN++;
+		}
+	}
+	/**
+	 * The <i>main</i> function starts the necessary components.
+	 * 
+	 * @param args [localhost_ip]
+	 */
+	public static void main(String[] args)
+	{
+	
+//		if(args.length > 0 && args[0] != null)
+//		{
+//					// Set node localhost IP manually
+//					Constants.setMyAddr(args[0]);
+//		}
+//		if(args.length > 1 && args[1] != null)
+//		{
+//					// Set node type
+//					Constants.setNodeType(Integer.parseInt(args[1]));
+//		}
+//		if(args.length > 2 && args[2] != null)
+//		{
+//			// Set routing 
+//			Constants.setRoutingType(Integer.parseInt(args[2]));
+//		}
+//		
+//		if(args.length > 3 && args[3] != null)
+//		{
+//			// Set Credit
+//			Constants.setRTCPCredit(Integer.parseInt(args[3]));
+//		}
+//
+//		if(args.length > 4 && args[4] != null)
+//		{
+//			// Set RTP timeout
+//			Constants.setRTCPTimeout(Integer.parseInt(args[4]));
+//		}
+//		if(args.length > 5 && args[5] != null)
+//		{
+//			// Set Packet ordering type
+//			Constants.setOrderingMode(Integer.parseInt(args[5]));
+//		}
+//		
+//		if(args.length > 6 && args[6] != null)
+//		{
+//			// Set Packet ordering type
+//			Constants.setFrameIndexFile(args[6]);
+//		}
+//		
+//		if(args.length > 7 && args[7] != null)
+//		{
+//			// Set Packet ordering type
+//			Constants.setNumberOfPackets(Integer.parseInt(args[7]));
+//		}
+//	
+//		Debugger.activate(Integer.parseInt("10001001", 2)); 
+//		OverlayManager.instance();
+//		Debugger.dumpMsg(null, " Running MOMENTUM v2.0", Debugger.MOMENTUM);
+//	
+		// Create stream
+		Stream s = new Stream("id", "orig", "dest");
+		Debugger.activate(Integer.parseInt("11111111", 2)); 
+		
+		addFrames(100, s);
+		long sum=0;
+		for(int i=0; i<20; i++)
+		{
+	
+		
+			long begin = System.currentTimeMillis();
+			SortedSet<Long> ret = s.getStoredPackets(50, s.DTS);
+			long end = System.currentTimeMillis();
+			long period = end - begin;
+			sum += period;
+			System.out.println("Returned: "+ret.size());
+			
+		//	int n = (int) Math.round(Math.random()*100);
+			int n = 20;
+			addFrames(n,s);
+			//System.out.println("Added "+n+" Left "+s.getNumberOfPacketsToSchedule());
+		}
+		
+//		begin = System.currentTimeMillis();
+//		s.getStoredPackets(50, s.DTS);
+//		end = System.currentTimeMillis();
+//		period = end - begin;
+//		System.out.println(period);
+		
+	System.out.println("Added time: "+sum);
+
+	}
+	
+	
+	
+}

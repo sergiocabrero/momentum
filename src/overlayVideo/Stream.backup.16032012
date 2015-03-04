@@ -1,0 +1,1413 @@
+package overlayVideo;
+
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import java.util.SortedMap;
+import java.util.SortedSet;
+import java.util.TreeMap;
+import java.util.TreeSet;
+
+import utils.Constants;
+
+public class Stream {
+	private SortedMap<Long, RTPPPacket> packets; // packets stored 
+	private SortedMap<Long, HashSet<Long>> frames; // frames and numbers of the packets in which they are stored
+	private SortedMap<Integer, SortedSet<Long>> packetPriority; // priority of each packet
+	private SortedMap<Integer, SortedSet<Long>> framesByType; // frames grouped by types
+	private SortedMap<Long, SortedSet<Long>> packetsByGOP; // frames grouped by types
+
+	private String id;
+	private String source;
+	private String destination;
+	private long bytesStored;
+
+	private long highestFrameSent = 0;	
+	private long highestFrameStored = 0;	
+	
+	/**
+	 * COMMON Class Functions
+	 * 
+	 * */
+	
+	
+	public Stream(String _id, String _source, String _destination)
+	{
+	
+		packets = new TreeMap<Long, RTPPPacket>();
+		frames = new TreeMap<Long, HashSet<Long>>();
+		packetPriority = new TreeMap<Integer, SortedSet<Long>>();
+		framesByType = new TreeMap<Integer, SortedSet<Long>>();
+		packetsByGOP = new TreeMap<Long, SortedSet<Long>>();
+
+		id = _id;
+		source = _source;
+		destination = _destination;
+		bytesStored = 0;
+	}
+
+
+	public String getDestination() {
+		return destination;
+	}
+
+	public String getSource() {
+		return source;
+	}
+
+
+	public String getId() {
+		return id;
+	}
+	
+	public RTPPPacket getPacket(long _sn)
+	{
+		synchronized (packets) {
+			return packets.get(_sn);
+		}
+	}
+	
+	public void addPacket(RTPPPacket _packet)
+	{
+		synchronized (packets) {
+			long sn = _packet.getSequenceNumber();
+			long[] packetFrames = _packet.getFramesSN();
+			int priority = _packet.getPriority();
+			long gop = _packet.getGOP();
+			
+			
+			
+			packets.put(sn, _packet);
+			
+			// add frames contained to the list
+			for (int i = 0; i < packetFrames.length; i++) {
+				
+				if(packetFrames[i] > highestFrameStored)
+				{
+					highestFrameStored = packetFrames[i];
+				}
+				
+				// it's the first packet of this frame
+				if(!frames.containsKey(packetFrames[i]))
+				{
+					frames.put(packetFrames[i], new HashSet<Long>());
+				}
+				frames.get(packetFrames[i]).add(_packet.getSequenceNumber());
+			
+				// types TODO: priority is the same as frame type now
+				if(!framesByType.containsKey(priority))
+				{
+					framesByType.put(priority, new TreeSet<Long>());
+				}
+				
+				framesByType.get(priority).add(packetFrames[i]);
+			}
+			
+			// priorities
+			if(!packetPriority.containsKey(priority))
+			{
+				packetPriority.put(priority, new TreeSet<Long>());
+			}
+			
+			packetPriority.get(priority).add(sn);
+			
+			// GOPS
+			if(!packetsByGOP.containsKey(gop))
+			{
+				packetsByGOP.put(gop, new TreeSet<Long>());
+			}
+			
+			packetsByGOP.get(gop).add(sn);
+			
+			
+			bytesStored += _packet.getMessage().length;
+		}
+		
+	}
+	
+	public void removePacket(long _sn)
+	{
+		synchronized (packets) {
+			RTPPPacket p = packets.remove(_sn);
+			int priority = p.getPriority();
+			long gop = p.getGOP();
+			
+			// remove in frames also
+			long[] packetFrames = p.getFramesSN();
+			for (int i = 0; i < packetFrames.length; i++) {
+				// it's the first packet of this frame
+				if(frames.containsKey(packetFrames[i]))
+				{
+					frames.get(packetFrames[i]).remove(_sn);
+				}
+					
+				// if no packets of these frames, remove the entry
+				if(frames.get(packetFrames[i]).isEmpty())
+				{
+					frames.remove(packetFrames[i]);
+				}
+				
+				// remove from the type list
+				if(framesByType.containsKey(priority))
+				{
+					framesByType.get(priority).remove(packetFrames[i]);
+				}
+			}
+			
+			// remove packet from priority
+			
+			if(packetPriority.containsKey(priority))
+			{
+				packetPriority.get(priority).remove(_sn);
+			}		
+			
+			// remove packet from GOP list
+			
+			if(packetsByGOP.containsKey(gop))
+			{
+				packetsByGOP.get(gop).remove(_sn);
+				if(packetsByGOP.get(gop).isEmpty())
+				{
+					// remove gop
+					packetsByGOP.remove(gop);
+				}
+					
+			}		
+			
+			bytesStored -= p.getMessage().length;
+			p = null;
+			
+			
+			
+		}
+	}
+	
+	public boolean isPacket(long _sn)
+	{
+		synchronized (packets) {
+			return packets.containsKey(_sn);
+		}
+	}
+	
+	public long getBytesStored()
+	{
+		return bytesStored;
+	}
+	
+	public int getPacketsStored()
+	{
+		synchronized(packets)
+		{
+			return packets.size();
+		}
+	}
+	
+	
+	public long[] getStoredFrames()
+	{
+		synchronized(frames)
+		{
+			Set<Long> k = frames.keySet();
+			long[] l = new long[k.size()];
+			int i =0;
+			for (Iterator<Long> iterator = k.iterator(); iterator.hasNext();) {
+				l[i] = ((Long) iterator.next()).longValue();
+				i++;
+			}
+			
+			return l;
+		}
+	}
+	
+	public long[] getStoredFramesBiggerThan(long _sn)
+	{
+		synchronized(frames)
+		{
+			Set<Long> k = frames.keySet();
+			SortedSet<Long> out = new TreeSet<Long>();
+			out.add(_sn);
+			for (Iterator<Long> iterator = k.iterator(); iterator.hasNext();) {
+				long l = ((Long) iterator.next()).longValue();
+				if(l > _sn)
+				{
+					out.add(l);
+				}
+			}
+			
+			long[] l = new long[out.size()];
+			int i =0;
+			for (Iterator<Long> iterator2 = out.iterator(); iterator2.hasNext();) {
+				l[i] = ((Long) iterator2.next()).longValue();
+				i++;
+			}
+			
+			return l;
+		}
+	}
+	
+	public long[] getStoredFramesByType(int _type)
+	{
+		synchronized(framesByType)
+		{
+			SortedSet<Long> k = framesByType.get(_type);
+			long[] l = new long[k.size()];
+			int i =0;
+			for (Iterator<Long> iterator = k.iterator(); iterator.hasNext();) {
+				l[i] = ((Long) iterator.next()).longValue();
+				i++;
+			}
+			
+			return l;
+		}
+	}
+	
+	public long[] getStoredFramesByTypeBiggerThan(int type, long _sn)
+	{
+		synchronized(frames)
+		{
+			Set<Long> k = frames.keySet();
+			SortedSet<Long> out = new TreeSet<Long>();
+			out.add(_sn);
+			for (Iterator<Long> iterator = k.iterator(); iterator.hasNext();) {
+				long l = ((Long) iterator.next()).longValue();
+				if(l > _sn)
+				{
+					out.add(l);
+				}
+			}
+			
+			long[] l = new long[out.size()];
+			int i =0;
+			for (Iterator<Long> iterator2 = out.iterator(); iterator2.hasNext();) {
+				l[i] = ((Long) iterator2.next()).longValue();
+				i++;
+			}
+			
+			return l;
+		}
+	}
+	
+	public long[] getPacketsByGOP(long _GOP)
+	{
+		synchronized(packetsByGOP)
+		{
+			SortedSet<Long> k = packetsByGOP.get(_GOP);
+			long[] l = new long[k.size()];
+			int i =0;
+			for (Iterator<Long> iterator = k.iterator(); iterator.hasNext();) {
+				l[i] = ((Long) iterator.next()).longValue();
+				i++;
+			}
+			
+			return l;
+		}
+	}
+	
+	
+	public long[] getStoredPackets()
+	{
+		synchronized(packets)
+		{
+			Set<Long> k = packets.keySet();
+			long[] l = new long[k.size()];
+			int i =0;
+			for (Iterator<Long> iterator = k.iterator(); iterator.hasNext();) {
+				l[i] = ((Long) iterator.next()).longValue();
+				i++;
+			}
+			
+			return l;
+		}
+	}
+	
+	
+	/**
+	 * THESE Functions implement the forwarding policies
+	 * 
+	 * */
+	
+	public static final int FIFO = 0;					//	sent packets from the beginning (as always before)
+	public static final int FIFOFrames = 1;				// frame aware: do not split frames into different transmission windows
+	public static final int FIFOFramesPriority = 2;		// sent before high priority packets and do not split frames
+	public static final int FIFOMinFPS = 3;				// Returns packet in a FIFO fashion given a minimum FPS to achieve
+
+	
+	public static final int LIFO = 10;					// from the end
+	public static final int LIFOFrames = 11;		
+	public static final int LIFOFramesPriority = 12;
+
+	public static final int HOPPING = 20;				// select packets to cover all the stored and give an overview of the video
+	public static final int HOPPINGFrames = 21;
+	public static final int HOPPINGFramesPriority = 22;
+	public static final int HOPPINGGop= 23;
+	public static final int BalancedHOPPING = 24;
+
+	
+	public SortedSet<Long> getStoredPackets(int _max, int _mode)
+	{
+		switch(_mode)
+		{
+			case FIFO: 
+					return getFIFOPackets(_max);
+//			case FIFOFrames:
+//				return getFIFOFrames(_max);
+			case FIFOFramesPriority:
+				return getFIFOPriority(_max);
+			case FIFOMinFPS:
+				return getFIFOMinFPS(_max);
+
+//			case LIFO:
+//				return getLIFOPackets(_max);
+//			case LIFOFramecs:
+//				return getLIFOFrames(_max);
+//			case LIFOFramesPriority:
+//				return getLIFOPriority(_max);
+//			case HOPPING:
+//				return getHOPPINGPackets(_max);
+//			case HOPPINGFrames:
+//				return getHOPPINGFrames(_max);
+			case HOPPINGFramesPriority:
+				return getHOPPINGPriority(_max);
+			case HOPPINGGop:
+				return getHOPPINGGop(_max);
+			case BalancedHOPPING:
+				return getBalancedHOPPING(_max);
+			default:
+					return getFIFOPackets(_max);
+		}
+	}
+	
+
+		
+	/**
+	 * Returns a maximum of _max packets using FIFO ordering
+	 * @param _max
+	 * @return
+	 */
+	private SortedSet<Long> getFIFOPackets(int _max)
+	{
+		synchronized(packets)
+		{
+			Set<Long> k = packets.keySet();
+			SortedSet<Long> ret = new TreeSet<Long>();
+			
+			
+			Iterator<Long> iterator = k.iterator();
+			int i =0;
+			while(iterator.hasNext() && i < _max) {
+				ret.add(iterator.next());
+				i++;
+			}
+			return ret;
+		}
+	}
+	
+	/**
+	 * Returns a maximum of _max packets using FIFO ordering inside the different priorities and without cutting frames
+	 * @param _max
+	 * @return
+	 */
+	private SortedSet<Long> getFIFOPriority(int _max)
+	{
+		synchronized(packets)
+		{
+			SortedSet<Long> sentPackets = new TreeSet<Long>();
+			
+		
+			// get and order priorities
+			SortedSet<Integer> priorityKeys = new TreeSet<Integer>(framesByType.keySet());
+			int[] priorities = new int[priorityKeys.size()];
+			int i = priorities.length-1;
+			for (Iterator<Integer> iterator = priorityKeys.iterator(); iterator.hasNext();) {
+				priorities[i] = iterator.next();
+				i--;
+			}
+			
+			boolean exit = false;
+			int p = 0;
+			int selected = 0;
+			// select packets from each priority
+			while(p<priorities.length && !exit)
+			{
+					long[] allFrames = getStoredFramesByType(priorities[p]);
+							
+					i=0;
+				
+					while(i<allFrames.length & selected<_max & !exit)
+					{
+						HashSet<Long> FramePackets = frames.get(allFrames[i]);
+						// if there is space, include them
+						if(FramePackets.size() + selected <= _max || sentPackets.isEmpty())
+						{
+							
+							for (Iterator<Long> iterator = FramePackets.iterator(); iterator.hasNext();) {
+								Long packetSN = (Long) iterator.next();
+									sentPackets.add(packetSN);
+									selected++;
+		
+							}		
+						}
+						else
+						{
+							exit = true;
+						}
+						
+						i++;
+					}
+				p++;
+			}
+			return sentPackets;
+		}
+	}
+	
+	/**
+	 * Returns a maximum of _max packets using FIFO ordering "ensuring" a minimum FPS 
+	 * @param _max
+	 * @return
+	 */
+	private SortedSet<Long> getFIFOMinFPS(int _max)
+	{
+		synchronized(packets)
+		{
+			SortedSet<Long> sentPackets = new TreeSet<Long>();
+
+			// Calculate the increment in frames for the minimum fps
+			int hop = Math.round(Constants.FPS_SOURCE/Constants.FPS_MIN);
+
+			// get starting point
+			long[] allFrames = getStoredFrames();
+			if(allFrames.length > 0)	// if any packets
+			{
+				if(allFrames[allFrames.length-1] <= highestFrameSent) // minimum FPS accomplished, fallback to FIFO by priorities...
+				{
+					return getFIFOPriority(_max);
+				}
+				else
+				{
+					// send the next frame
+					long frameSelected = highestFrameSent + hop;
+					while(frameSelected <= allFrames[allFrames.length-1] && sentPackets.size() < _max)
+					{
+						if(frames.containsKey(frameSelected) && frames.get(frameSelected).size() > 0)	// if the frame exists!
+						{
+							sentPackets.addAll(frames.get(frameSelected));
+							highestFrameSent = frameSelected;
+						}
+						frameSelected +=hop;
+					}
+					
+					
+					// last frame reached... go to FIFOPriority to complete
+					if(sentPackets.size() < _max)
+					{
+						sentPackets.addAll(getFIFOPriority(_max - sentPackets.size()));
+					}
+					return sentPackets;
+					
+				}
+			}
+			else
+			{
+				return sentPackets; // empty
+			}
+		}
+		
+	}
+	
+	/**
+	 * Returns a maximum of _max packets using HOPPING ordering inside the different priorities and without cutting frames.
+	 * If a single frame is selected and does not fit into _max, all packets of that frame are returned.
+	 * @param _max
+	 * @return
+	 */
+	private SortedSet<Long> getHOPPINGPriority(int _max)
+	{
+		synchronized(packets)
+		{
+			SortedSet<Long> sentPackets = new TreeSet<Long>();
+			SortedSet<Long> sentFrames = new TreeSet<Long>();
+
+			// get and order priorities
+			SortedSet<Integer> priorityKeys = new TreeSet<Integer>(framesByType.keySet());
+			int[] priorities = new int[priorityKeys.size()];
+			int i = priorities.length-1;
+			for (Iterator<Integer> iterator = priorityKeys.iterator(); iterator.hasNext();) {
+				priorities[i] = iterator.next();
+				i--;
+			}
+			
+			boolean exit = false;
+			int p = 0;
+			int selected;
+			// select packets from each priority
+			while(p<priorities.length && !exit)
+			{
+				long[] allFrames = getStoredFramesByType(priorities[p]);
+				if(allFrames.length > 0)
+				{
+					selected  = 0;
+					sentFrames.add(allFrames[selected]);
+					sentPackets.addAll(frames.get(allFrames[selected]));
+				}
+				
+				if(allFrames.length > 1)
+				{
+					// last
+					selected = allFrames.length-1;
+	
+					if(_max > sentPackets.size() + frames.get(allFrames[selected]).size())
+					{
+						sentFrames.add(allFrames[selected]);
+	
+						sentPackets.addAll(frames.get(allFrames[selected]));
+	
+					}
+				}
+				if(allFrames.length > 2)
+				{
+					int j = 1;
+					int framesSent = 2;
+					// intermediate ones
+					while(framesSent < allFrames.length && sentPackets.size() < packets.size() && sentPackets.size()  < _max && !exit)
+					{
+						for(i=0;(2*i+1)<j;i++)
+						{
+							selected = Math.round((2*i+1)*(allFrames.length-1)/j);
+							
+							if(!sentFrames.contains(allFrames[selected]))
+							{
+								System.out.println("Frame: "+allFrames[selected]+" "+priorities[p]);
+								// check if a pass the maximum number of packets or if no frame has been included
+								if(_max >= sentPackets.size() + frames.get(allFrames[selected]).size())
+								{
+									framesSent++;
+									sentFrames.add(allFrames[selected]);
+									sentPackets.addAll(frames.get(allFrames[selected]));	//add
+								}
+								else
+								{
+									exit = true;	// end
+								}
+							}
+							else
+							{
+								//System.out.println("Already sent: "+allFrames[selected]+" "+selected+" "+i+" "+j);
+							}
+							//System.out.println("Frames sent: "+framesSent+"/"+allFrames.length);
+						
+	
+						}
+						j = 2*j;
+					}
+				}
+				p++;
+			}
+			
+			
+			return sentPackets;
+		}
+	}
+	
+	/**
+	 * Returns a maximum of _max packets using HOPPING ordering inside the different priorities and without cutting frames.
+	 * If a single frame is selected and does not fit into _max, all packets of that frame are returned.
+	 * @param _max
+	 * @return
+	 */
+	private SortedSet<Long> getHOPPINGGop(int _max)
+	{
+		synchronized(packets)
+		{
+			if(packetPriority.get(Constants.MPEG_FRAME_I).isEmpty())	//  Only for P and B frames, otherwise hopping between the I frames... same as 22
+			{
+			
+				SortedSet<Long> sentPackets = new TreeSet<Long>();
+				SortedSet<Long> sentFrames = new TreeSet<Long>();
+	
+							
+				boolean exit = false;
+				int selected;
+				long hdvframe;
+				long[] allFrames = getStoredFrames();
+				
+				// send first
+				if(allFrames.length > 0)
+				{
+					selected  = 0;
+					sentFrames.add(allFrames[selected]);
+					sentPackets.addAll(frames.get(allFrames[selected]));
+				}
+				
+				// send last
+				if(allFrames.length > 1)
+				{
+						// last
+						selected = allFrames.length-1;
+						hdvframe = hdvFrame(allFrames[selected]);
+						if(_max > sentPackets.size() + frames.get(hdvframe).size())
+						{
+							sentFrames.add(hdvframe);
+		
+							sentPackets.addAll(frames.get(hdvframe));
+		
+						}
+				}
+				
+					int j = 1;
+					int framesSent = 2;
+					// intermediate ones
+					while(framesSent < allFrames.length && sentPackets.size() < packets.size() && sentPackets.size()  < _max && !exit)
+					{
+						for(int i=0;(2*i+1)<j;i++)
+						{
+							selected = Math.round((2*i+1)*(allFrames.length-1)/j);
+							if(selected > 0)
+							{
+								hdvframe = hdvFrame(allFrames[selected]);
+								System.out.println("Frame: "+hdvframe);
+	
+								if(!sentFrames.contains(hdvframe))
+								{
+									// check if a pass the maximum number of packets or if no frame has been included
+									if(_max >= sentPackets.size() + frames.get(hdvframe).size())
+									{
+										framesSent++;
+										sentFrames.add(hdvframe);
+										sentPackets.addAll(frames.get(hdvframe));	//add
+									}
+									else
+									{
+										exit = true;	// end
+									}
+								}
+								else
+								{
+									//System.out.println("Already sent: "+allFrames[selected]+" "+selected+" "+i+" "+j);
+								}
+								//System.out.println("Frames sent: "+framesSent+"/"+allFrames.length);
+							}
+							else
+							{
+								exit = true; // end
+							}
+	
+						}
+						j = 2*j;
+					}
+				
+				return sentPackets;
+			}
+		
+			else
+			{
+				return getHOPPINGPriority(_max);
+			}
+		}
+	}
+
+
+	/**
+	 * Returns a maximum of _max packets using HOPPING ordering inside the different priorities and without cutting frames.
+	 * If a single frame is selected and does not fit into _max, all packets of that frame are returned.
+	 * @param _max
+	 * @return
+	 */
+	private SortedSet<Long> getBalancedHOPPING(int _max)
+	{
+		synchronized(packets)
+		{
+			if(frames.containsKey(highestFrameStored)) // not sent yet
+			{
+				// Balanced window
+				if(frame)
+				
+				SortedSet<Long> sentPackets = new TreeSet<Long>();
+				SortedSet<Long> sentFrames = new TreeSet<Long>();
+				
+				
+			}
+			else
+			{
+				return getHOPPINGGop(_max);
+			}
+			if(packetPriority.get(Constants.MPEG_FRAME_I).isEmpty())	//  Only for P and B frames, otherwise hopping between the I frames... same as 22
+			{
+			
+				SortedSet<Long> sentPackets = new TreeSet<Long>();
+				SortedSet<Long> sentFrames = new TreeSet<Long>();
+	
+							
+				boolean exit = false;
+				int selected;
+				long hdvframe;
+				long[] allFrames = getStoredFrames();
+				
+				// send first
+				if(allFrames.length > 0)
+				{
+					selected  = 0;
+					sentFrames.add(allFrames[selected]);
+					sentPackets.addAll(frames.get(allFrames[selected]));
+				}
+				
+				// send last
+				if(allFrames.length > 1)
+				{
+						// last
+						selected = allFrames.length-1;
+						hdvframe = hdvFrame(allFrames[selected]);
+						if(_max > sentPackets.size() + frames.get(hdvframe).size())
+						{
+							sentFrames.add(hdvframe);
+		
+							sentPackets.addAll(frames.get(hdvframe));
+		
+						}
+				}
+				
+					int j = 1;
+					int framesSent = 2;
+					// intermediate ones
+					while(framesSent < allFrames.length && sentPackets.size() < packets.size() && sentPackets.size()  < _max && !exit)
+					{
+						for(int i=0;(2*i+1)<j;i++)
+						{
+							selected = Math.round((2*i+1)*(allFrames.length-1)/j);
+							if(selected > 0)
+							{
+								hdvframe = hdvFrame(allFrames[selected]);
+								System.out.println("Frame: "+hdvframe);
+	
+								if(!sentFrames.contains(hdvframe))
+								{
+									// check if a pass the maximum number of packets or if no frame has been included
+									if(_max >= sentPackets.size() + frames.get(hdvframe).size())
+									{
+										framesSent++;
+										sentFrames.add(hdvframe);
+										sentPackets.addAll(frames.get(hdvframe));	//add
+									}
+									else
+									{
+										exit = true;	// end
+									}
+								}
+								else
+								{
+									//System.out.println("Already sent: "+allFrames[selected]+" "+selected+" "+i+" "+j);
+								}
+								//System.out.println("Frames sent: "+framesSent+"/"+allFrames.length);
+							}
+							else
+							{
+								exit = true; // end
+							}
+	
+						}
+						j = 2*j;
+					}
+				
+				return sentPackets;
+			}
+		
+			else
+			{
+				return getHOPPINGPriority(_max);
+			}
+		}
+	}
+	
+	private SortedSet<Long> selectWindow()
+	{
+		if(frames.containsKey(highestFrameStored)) // it was not sent, so balance window
+		{
+			
+			
+		}
+		else						          		// normal window
+		{
+			
+		}
+		
+	}
+	/**
+	 * 
+	 * Return the stored frame with the highest decoding value in the same GOP of the frame given by the parameter
+	 * 
+	 * @param _frame
+	 * @return
+	 */
+	private long hdvFrame(long _frame)
+	{
+		// first packet of the frame
+		long sn = frames.get(_frame).iterator().next();
+
+		// get gop
+		long gop = packets.get(sn).getGOP();
+		
+		// priority
+		int priority = packets.get(sn).getPriority();
+		
+		long selectedFrame = _frame;
+		// get packets in the gop
+		
+		// select the frame with highest priority	
+		Iterator<Long> iPackets = packetsByGOP.get(gop).iterator();
+		while (iPackets.hasNext()) {
+			Long packet = iPackets.next();
+			if((packets.get(packet).getPriority() > priority) ||		// I over P over B
+				(priority == Constants.MPEG_FRAME_P && packets.get(packet).getPriority()== priority && packets.get(packet).getSequenceNumber() < sn))	// the lower P the better
+			{
+				selectedFrame = packets.get(packet).getFramesSN()[0];
+				priority=packets.get(packet).getPriority();
+			}
+		}
+		
+		return selectedFrame;
+		
+	}
+	
+//	/**
+//	 * Returns a maximum of _max packets using LIFO ordering
+//	 * @param _max
+//	 * @return
+//	 */
+//	private long[] getLIFOPackets(int _max)
+//	{
+//		synchronized(packets)
+//		{
+//			Set<Long> k = packets.keySet();
+//			long[] l;
+//			
+//			if(_max > k.size())
+//			{
+//				l = new long[k.size()];
+//			}
+//			else
+//			{
+//				l = new long[_max];
+//			}
+//		
+//			long[] allPackets = getStoredPackets();
+//			
+//			int i=allPackets.length-1;
+//			int selected = 0;
+//			while(i>=0 & selected<_max)
+//			{
+//				l[selected] = allPackets[i];
+//				selected++;
+//				i--;
+//			}
+//			
+//			return l;
+//		}
+//	}
+//	
+//	/**
+//	 * Returns a maximum of _max packets using LIFO ordering, without cutting frames
+//	 * @param _max
+//	 * @return
+//	 */
+//	private long[] getLIFOFrames(int _max)
+//	{
+//		synchronized(packets)
+//		{
+//			SortedSet<Long> sentPackets = new TreeSet<Long>();
+//			
+//		
+//			long[] allFrames = getStoredFrames();
+//			
+//			int i=allFrames.length-1;
+//			int selected = 0;
+//			boolean exit = false;
+//			
+//			while(i>=0 & selected<_max & !exit)
+//			{
+//				HashSet<Long> packets = frames.get(allFrames[i]);
+//				// if there is space, include them
+//				if(packets.size() + selected <= _max)
+//				{
+//					
+//					for (Iterator<Long> iterator = packets.iterator(); iterator.hasNext();) {
+//						Long p = (Long) iterator.next();
+//							sentPackets.add(p);
+//							selected++;
+//
+//					}		
+//				}
+//				else
+//				{
+//					exit = true;
+//				}
+//				
+//				i--;
+//			}
+//
+//			// convert to array
+//			long[] ret = new long[sentPackets.size()];
+//			i = 0;
+//			for (Iterator<Long> iterator = sentPackets.iterator(); iterator.hasNext();) {
+//				Long long1 = (Long) iterator.next();
+//				ret[i] = long1;
+//				i++;
+//			}
+//			
+//			return ret;
+//		}
+//	}
+//	
+//	/**
+//	 * Returns a maximum of _max packets using FIFO ordering inside the different priorities and without cutting frames
+//	 * @param _max
+//	 * @return
+//	 */
+//	private long[] getLIFOPriority(int _max)
+//	{
+//		synchronized(packets)
+//		{
+//			SortedSet<Long> sentPackets = new TreeSet<Long>();
+//			
+//		
+//			// get and order priorities
+//			SortedSet<Integer> priorityKeys = new TreeSet<Integer>(framesByType.keySet());
+//			int[] priorities = new int[priorityKeys.size()];
+//			int i = priorities.length-1;
+//			for (Iterator<Integer> iterator = priorityKeys.iterator(); iterator.hasNext();) {
+//				priorities[i] = iterator.next();
+//				i--;
+//			}
+//			
+//			boolean exit = false;
+//			int p = 0;
+//			int selected = 0;
+//			// select packets from each priority
+//			while(p<priorities.length && !exit)
+//			{
+//					long[] allFrames = getStoredFramesByType(priorities[p]);
+//							
+//					i=allFrames.length-1;
+//				
+//					while(i>=0 & selected<_max & !exit)
+//					{
+//						HashSet<Long> packets = frames.get(allFrames[i]);
+//						// if there is space, include them
+//						if(packets.size() + selected <= _max)
+//						{
+//							
+//							for (Iterator<Long> iterator = packets.iterator(); iterator.hasNext();) {
+//								Long pac = (Long) iterator.next();
+//									sentPackets.add(pac);
+//									selected++;
+//							}		
+//						}
+//						else
+//						{
+//							exit = true;
+//						}
+//						
+//						i--;
+//					}
+//				p++;
+//			}
+//			// convert to array
+//			long[] ret = new long[sentPackets.size()];
+//			i = 0;
+//			for (Iterator<Long> iterator = sentPackets.iterator(); iterator.hasNext();) {
+//				Long long1 = (Long) iterator.next();
+//				ret[i] = long1;
+//				i++;
+//			}
+//			
+//			return ret;
+//		}
+//	}
+//		
+//	/**
+//	 * Returns a maximum of _max packets using FIFO ordering
+//	 * @param _max
+//	 * @return
+//	 */
+//	private long[] getFIFOPackets(int _max)
+//	{
+//		synchronized(packets)
+//		{
+//			Set<Long> k = packets.keySet();
+//			long[] l;
+//			
+//			if(_max > k.size())
+//			{
+//				l = new long[k.size()];
+//			}
+//			else
+//			{
+//				l = new long[_max];
+//			}
+//			Iterator<Long> iterator = k.iterator();
+//			int i =0;
+//			while(iterator.hasNext() && i < _max) {
+//				l[i] = ((Long) iterator.next()).longValue();
+//				i++;
+//			}
+//			return l;
+//		}
+//	}
+//	
+//	/**
+//	 * Returns a maximum of _max packets using FIFO ordering, without cutting frames
+//	 * @param _max
+//	 * @return
+//	 */
+//	private long[] getFIFOFrames(int _max)
+//	{
+//		synchronized(packets)
+//		{
+//			SortedSet<Long> sentPackets = new TreeSet<Long>();
+//			
+//		
+//			long[] allFrames = getStoredFrames();
+//			
+//			int i=0;
+//			int selected = 0;
+//			boolean exit = false;
+//			
+//			while(i<allFrames.length & selected<_max & !exit)
+//			{
+//				HashSet<Long> packets = frames.get(allFrames[i]);
+//				// if there is space, include them
+//				if(packets.size() + selected <= _max)
+//				{
+//					
+//					for (Iterator<Long> iterator = packets.iterator(); iterator.hasNext();) {
+//						Long p = (Long) iterator.next();
+//							sentPackets.add(p);
+//							selected++;
+//
+//					}		
+//				}
+//				else
+//				{
+//					exit = true;
+//				}
+//				
+//				i++;
+//			}
+//
+//			// convert to array
+//			long[] ret = new long[sentPackets.size()];
+//			i = 0;
+//			for (Iterator<Long> iterator = sentPackets.iterator(); iterator.hasNext();) {
+//				Long long1 = (Long) iterator.next();
+//				ret[i] = long1;
+//				i++;
+//			}
+//			
+//			return ret;
+//		}
+//	}
+//	
+//	/**
+//	 * Returns a maximum of _max packets using FIFO ordering inside the different priorities and without cutting frames
+//	 * @param _max
+//	 * @return
+//	 */
+//	private long[] getFIFOPriority(int _max)
+//	{
+//		synchronized(packets)
+//		{
+//			SortedSet<Long> sentPackets = new TreeSet<Long>();
+//			
+//		
+//			// get and order priorities
+//			SortedSet<Integer> priorityKeys = new TreeSet<Integer>(framesByType.keySet());
+//			int[] priorities = new int[priorityKeys.size()];
+//			int i = priorities.length-1;
+//			for (Iterator<Integer> iterator = priorityKeys.iterator(); iterator.hasNext();) {
+//				priorities[i] = iterator.next();
+//				i--;
+//			}
+//			
+//			boolean exit = false;
+//			int p = 0;
+//			int selected = 0;
+//			// select packets from each priority
+//			while(p<priorities.length && !exit)
+//			{
+//					long[] allFrames = getStoredFramesByType(priorities[p]);
+//							
+//					i=0;
+//				
+//					while(i<allFrames.length & selected<_max & !exit)
+//					{
+//						HashSet<Long> packets = frames.get(allFrames[i]);
+//						// if there is space, include them
+//						if(packets.size() + selected <= _max)
+//						{
+//							
+//							for (Iterator<Long> iterator = packets.iterator(); iterator.hasNext();) {
+//								Long packetSN = (Long) iterator.next();
+//									sentPackets.add(packetSN);
+//									selected++;
+//		
+//							}		
+//						}
+//						else
+//						{
+//							exit = true;
+//						}
+//						
+//						i++;
+//					}
+//				p++;
+//			}
+//			// convert to array
+//			long[] ret = new long[sentPackets.size()];
+//			i = 0;
+//			for (Iterator<Long> iterator = sentPackets.iterator(); iterator.hasNext();) {
+//				Long long1 = (Long) iterator.next();
+//				ret[i] = long1;
+//				i++;
+//			}
+//			
+//			return ret;
+//		}
+//	}
+//	/**
+//	 * 
+//	 * Returns a maximum of _max packets using HOPPING ordering
+//	 * @param _max
+//	 * 
+//	 * 
+//	 */
+//	private long[] getHOPPINGPackets(int _max)
+//	
+//	{
+//					
+//		long[] allPackets = getStoredPackets();
+//		// the algorithm 2
+//		int total = allPackets.length;
+//		long[] sentPackets;
+//		
+//		if(_max < total)
+//		{
+//			sentPackets = new long[_max];
+//		}
+//		else
+//		{
+//			sentPackets = new long[total];
+//		}
+//		
+//		boolean[] selectedStatus = new boolean[total];
+//		
+//		int sent = 0;
+//		int j = 1;
+//		int selected;
+//	
+//		// send first and last (out of the progression)
+//		if(_max > 0)
+//		{
+//			selected = 0;
+//			selectedStatus[selected] = true;
+//			sentPackets[sent] = allPackets[selected];
+//			sent++;
+//
+//		}
+//		if(_max > 1)
+//		{
+//			selected = allPackets.length-1;
+//			selectedStatus[selected] = true;
+//			sentPackets[sent] = allPackets[selected];
+//			sent++;
+//		}
+//		
+//		while(sent < total & sent < _max)
+//		{
+//			for(int i=0;(2*i+1)<j;i++)
+//			{
+//				if(sent <  sentPackets.length)
+//				{
+//					selected = Math.round((2*i+1)*(total-1)/j);
+//					if(!selectedStatus[selected])
+//					{
+//						selectedStatus[selected] = true;
+//						sentPackets[sent] = allPackets[selected];
+//						sent++;
+//					}
+//				}
+//			}
+//			j = 2*j;
+//
+//		}
+//		return sentPackets;
+//	}
+//	
+//	
+//	/**
+//	 * 
+//	 * Returns a maximum of _max packets using HOPPING in a frame aware fashion 
+//	 * @param _max
+//	 * 
+//	 * 
+//	 */
+//	private long[] getHOPPINGFrames(int _max)
+//	
+//	{
+//		long[] allFrames = getStoredFrames();
+//		SortedSet<Long> sentPackets = new TreeSet<Long>();
+//		SortedSet<Long> sentFrames = new TreeSet<Long>();
+//
+//		
+//		int j = 1;
+//		int selected  = 0;
+//	
+//		// send first and last (out of the progression)
+//		if(_max > frames.get(allFrames[selected]).size())
+//		{
+//			sentPackets.addAll(frames.get(allFrames[selected]));
+//		}
+//
+//		// last
+//		selected = allFrames.length-1;
+//
+//		if(_max > sentPackets.size() + frames.get(allFrames[selected]).size())
+//		{
+//			sentPackets.addAll(frames.get(allFrames[selected]));
+//
+//		}
+//		
+//		boolean exit = false;
+//		// intermediate ones
+//		while(sentPackets.size() < packets.size() & sentPackets.size()  < _max & !exit)
+//		{
+//			for(int i=0;(2*i+1)<j;i++)
+//			{
+//				selected = Math.round((2*i+1)*(allFrames.length-1)/j);
+//				if(!sentFrames.contains(allFrames[selected]))
+//				{
+//					sentFrames.add(allFrames[selected]);
+//					// check if a pass the maximum number of packets
+//					if(_max >= sentPackets.size() + frames.get(allFrames[selected]).size())
+//					{
+//						sentPackets.addAll(frames.get(allFrames[selected]));	//add
+//					}
+//					else
+//					{
+//						exit = true;	// end
+//					}
+//				}
+//				
+//			}
+//			j = 2*j;
+//
+//		}
+//	
+//		// convert to array
+//		long[] ret = new long[sentPackets.size()];
+//		int i = 0;
+//		for (Iterator<Long> iterator = sentPackets.iterator(); iterator.hasNext();) {
+//			Long long1 = (Long) iterator.next();
+//			ret[i] = long1;
+//			i++;
+//		}
+//		
+//		return ret;
+//	}
+//	
+//	/**
+//	 * Returns a maximum of _max packets using FIFO ordering inside the different priorities and without cutting frames
+//	 * @param _max
+//	 * @return
+//	 */
+//	private long[] getHOPPINGPriority(int _max)
+//	{
+//		synchronized(packets)
+//		{
+//			SortedSet<Long> sentPackets = new TreeSet<Long>();
+//			SortedSet<Long> sentFrames = new TreeSet<Long>();
+//
+//			// get and order priorities
+//			SortedSet<Integer> priorityKeys = new TreeSet<Integer>(framesByType.keySet());
+//			int[] priorities = new int[priorityKeys.size()];
+//			int i = priorities.length-1;
+//			for (Iterator<Integer> iterator = priorityKeys.iterator(); iterator.hasNext();) {
+//				priorities[i] = iterator.next();
+//				i--;
+//			}
+//			
+//			boolean exit = false;
+//			int p = 0;
+//			int selected;
+//			// select packets from each priority
+//			while(p<priorities.length && !exit)
+//			{
+//				long[] allFrames = getStoredFramesByType(priorities[p]);
+//				
+//				selected  = 0;
+//				// send first and last (out of the progression)
+//				if(_max > frames.get(allFrames[selected]).size())
+//				{
+//					sentFrames.add(allFrames[selected]);
+//					sentPackets.addAll(frames.get(allFrames[selected]));
+//				}
+//
+//				// last
+//				selected = allFrames.length-1;
+//
+//				if(_max > sentPackets.size() + frames.get(allFrames[selected]).size())
+//				{
+//					sentFrames.add(allFrames[selected]);
+//
+//					sentPackets.addAll(frames.get(allFrames[selected]));
+//
+//				}
+//				
+//				
+//				int j = 1;
+//				int framesSent = 2;
+//				// intermediate ones
+//				while(framesSent < allFrames.length && sentPackets.size() < packets.size() && sentPackets.size()  < _max && !exit)
+//				{
+//					for(i=0;(2*i+1)<j;i++)
+//					{
+//						selected = Math.round((2*i+1)*(allFrames.length-1)/j);
+//						
+//						if(!sentFrames.contains(allFrames[selected]))
+//						{
+//							System.out.println("Frame: "+allFrames[selected]+" "+priorities[p]);
+//							// check if a pass the maximum number of packets
+//							if(_max >= sentPackets.size() + frames.get(allFrames[selected]).size())
+//							{
+//								framesSent++;
+//								sentFrames.add(allFrames[selected]);
+//								sentPackets.addAll(frames.get(allFrames[selected]));	//add
+//							}
+//							else
+//							{
+//								exit = true;	// end
+//							}
+//						}
+//						else
+//						{
+//							//System.out.println("Already sent: "+allFrames[selected]+" "+selected+" "+i+" "+j);
+//						}
+//						//System.out.println("Frames sent: "+framesSent+"/"+allFrames.length);
+//					
+//
+//					}
+//					j = 2*j;
+//				}
+//				p++;
+//			}
+//			// convert to array
+//			long[] ret = new long[sentPackets.size()];
+//			i = 0;
+//			for (Iterator<Long> iterator = sentPackets.iterator(); iterator.hasNext();) {
+//				Long long1 = (Long) iterator.next();
+//				ret[i] = long1;
+//				i++;
+//			}
+//			
+//			return ret;
+//		}
+//	}
+}
